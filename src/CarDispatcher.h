@@ -17,16 +17,23 @@
 using namespace std;
 
 //#define _DEBUG
-#define FIND_NEAREST
+//#define _DDEBUG
+//#define FIND_NEAREST_PASSENGER
+//#define FIND_BEST_PASSENGER
+#define FIND_BEST_PAIR
 
 struct PassengerInfo {
   PassengerRequest request;
   int status; // 0: wait; 1: moving or fulfill
+  int car_id; // the car intending to pick up this passenger
+  int wait_time; // the time when the car pick up passenger
 };
 
 struct CarInfo {
   CarCtl carctl;
-  int arrival_time;
+  int arrival_time; // the arrival time of next node (not destination)
+  int passenger_id; // the passenger the car try to pick up
+  
 };
 
 class CarDispatcher { 
@@ -86,7 +93,7 @@ public:
     	dirty[i] = false;
       }
     }
-#ifdef _DEBUG
+#ifdef _DDEBUG
     printf("init %d\n", from);
     for (unsigned i = 0; i < intersections.size(); i++) {
 	  printf("to %d dist %d thr node %d\n", i, distance[from][i], shortest_node[from][i]);
@@ -117,10 +124,12 @@ public:
 	turn++;
 #ifdef _DEBUG	
 	printf("turn %d:\n", turn);
+	//if (turn > 15)
+	  //exit(0);
 #endif
 	
 	for (unsigned i = 0; i < passenger_requests.size(); i++) {
-	  PassengerInfo info = {passenger_requests[i], 0};
+	  PassengerInfo info = {passenger_requests[i], 0, 0, 0};
 	  passenger_info[passenger_requests[i].passenger_id] = info;
 	}
 #ifdef _DEBUG
@@ -132,33 +141,50 @@ public:
 	}
 #endif
 
-    // might be optimized by checking passenger and decide which car would serve
-	for (map<int, PassengerInfo>::iterator it = passenger_info.begin(); it != passenger_info.end(); it++) {
-	  if (it->second.status)
-	    continue;
-	}
 	
+	for (unsigned i = 0; i < cars_at_intersections.size(); i++) {
+	  CarInfo info = {cars_at_intersections[i], turn, 0};
+	  car_info[cars_at_intersections[i].car_id] = info;
+	}
 #ifdef _DEBUG
 	// print all car info
-    printf("car info:\n");
+    printf("decision car info:\n");
+	for (unsigned i = 0; i < cars_at_intersections.size(); i++) {
+	  printf("%d %d %d\n", cars_at_intersections[i].car_id, cars_at_intersections[i].intersection_id, 
+	    cars_at_intersections[i].passenger_id);
+	}
+    printf("car info (before):\n");
 	for (map<int, CarInfo>::iterator it = car_info.begin(); it != car_info.end(); it++) {
 	  printf("%d %d %d %d\n", it->second.carctl.car_id, it->second.carctl.intersection_id, 
 	    it->second.carctl.passenger_id, it->second.arrival_time);
 	}
 #endif
-	for (unsigned i = 0; i < cars_at_intersections.size(); i++) {
-	  CarInfo info = {cars_at_intersections[i], turn};
-	  car_info[cars_at_intersections[i].car_id] = info;
-	}
 	
-#ifdef FIND_NEAREST
-    findNearest(cars_at_intersections);
+#ifdef FIND_NEAREST_PASSENGER
+    findNearestPassenger(cars_at_intersections);
 	return;
+#else
+#ifdef FIND_BEST_PASSENGER
+    findBestPassenger(cars_at_intersections);
 #endif
+#ifdef FIND_BEST_PAIR
+	findBestPair(cars_at_intersections);
+#endif
+#endif
+
+#ifdef _DEBUG
+	// print all car info
+    printf("car info (after):\n");
+	for (map<int, CarInfo>::iterator it = car_info.begin(); it != car_info.end(); it++) {
+	  printf("%d %d %d %d\n", it->second.carctl.car_id, it->second.carctl.intersection_id, 
+	    it->second.carctl.passenger_id, it->second.arrival_time);
+	}
+#endif
+
   }
   
-  void findNearest(std::vector<CarCtl> & cars_at_intersections) {
-	// for each idle car, decide if need to find nearest passenger or move to place without cars
+  void findNearestPassenger(std::vector<CarCtl> & cars_at_intersections) {
+	// for each idle car, decide if need to find the nearest passenger or move to place without cars
 	for (unsigned i = 0; i < cars_at_intersections.size(); i++) {
 	  if (cars_at_intersections[i].passenger_id >= 0) { // with passenger; just find a nearest route to dst
 	    cars_at_intersections[i].intersection_id = findNextNode(
@@ -193,7 +219,130 @@ public:
 	  }
 	}
   }
+
+  void findBestPassenger(std::vector<CarCtl> & cars_at_intersections) {
+	// for each idle car, decide if need to find the best passenger or move to place without cars
+	// best passenger means could be completely served earliest
+	for (unsigned i = 0; i < cars_at_intersections.size(); i++) {
+	  if (cars_at_intersections[i].passenger_id >= 0) { // with passenger; just find a nearest route to dst
+	    cars_at_intersections[i].intersection_id = findNextNode(
+		  cars_at_intersections[i].intersection_id, 
+		  passenger_info[cars_at_intersections[i].passenger_id].request.dst_intersection_id);
+	  } else { // no passenger; try find the best passenger 
+	    int bestScore = INT_MAX;
+	    int bestPassenger = -1;
+	    for (map<int, PassengerInfo>::iterator it = passenger_info.begin(); it != passenger_info.end(); it++) {
+		  if (it->second.status)
+		    continue;
+	      int score = findDistance(cars_at_intersections[i].intersection_id, it->second.request.src_intersection_id) +
+		    findDistance(it->second.request.src_intersection_id, it->second.request.dst_intersection_id);
+		  if (score < bestScore) { // might be optimized by checking if passenger's dst has another passenger 
+		    bestScore = score;
+		    bestPassenger = it->first;
+		  }
+	    }
+#ifdef _DEBUG
+        printf("best passenger %d with score %d\n", bestPassenger, bestScore);
+#endif		
+	    if (bestPassenger >= 0) {
+	      if (passenger_info[bestPassenger].request.src_intersection_id == cars_at_intersections[i].intersection_id) { // just pickup the passenger, and toward to dst
+		    cars_at_intersections[i].passenger_id = passenger_info[bestPassenger].request.passenger_id;
+		    passenger_info[bestPassenger].status = 1;
+			cars_at_intersections[i].intersection_id = findNextNode(cars_at_intersections[i].intersection_id, 
+			  passenger_info[bestPassenger].request.dst_intersection_id);
+		  } else {  // toward to the passenger
+			cars_at_intersections[i].intersection_id = findNextNode(cars_at_intersections[i].intersection_id, 
+			  passenger_info[bestPassenger].request.src_intersection_id);
+		  }
+		} else { // no passenger at all, do nothing
+		  // might be optimized by checking the distribution of cars
+		  continue;
+		}
+	  }
+	}
+  }
   
+  void findBestPair(std::vector<CarCtl> & cars_at_intersections) {
+	if (cars_at_intersections.empty())
+	  return;
+	bool all_busy = true;
+	for (unsigned i = 0; i < cars_at_intersections.size(); i++) {
+	  if (cars_at_intersections[i].passenger_id < 0) {
+	    all_busy = false;
+		break;
+	  }
+	}
+    map<int, map<int, int> > scores;
+	multimap<int, pair<int, int> > sorted;
+	if (!all_busy) {
+      // update passenger_info[i].car_id and car_info[i].passenger_id
+      for (map<int, CarInfo>::iterator it = car_info.begin(); it != car_info.end(); it++) {
+	    it->second.passenger_id = -1;
+        for (map<int, PassengerInfo>::iterator ij = passenger_info.begin(); ij != passenger_info.end(); ij++) {
+	      if (ij->second.status)
+		    continue;
+  		  int score = 0;
+	  	  if (it->second.carctl.passenger_id >= 0) {
+		    score = (it->second.arrival_time - turn) +
+		      findDistance(it->second.carctl.intersection_id, passenger_info[it->second.carctl.passenger_id].request.dst_intersection_id) +
+		      findDistance(passenger_info[it->second.carctl.passenger_id].request.dst_intersection_id, 
+			    ij->second.request.src_intersection_id);
+		  } else {
+	        score = (it->second.arrival_time - turn) +
+		      findDistance(it->second.carctl.intersection_id, ij->second.request.src_intersection_id);
+		  }
+	      scores[it->second.carctl.car_id][ij->second.request.passenger_id] = score;
+		  sorted.insert(make_pair(score, make_pair(it->second.carctl.car_id, ij->second.request.passenger_id)));
+	    }
+	  }
+
+      for (map<int, PassengerInfo>::iterator it = passenger_info.begin(); it != passenger_info.end(); it++) {
+	    it->second.car_id = -1;
+  	  }
+	
+      // priority: minimum score first
+      for (multimap<int, pair<int, int> >::iterator it = sorted.begin(); it != sorted.end(); it++) {
+	    if (car_info[it->second.first].passenger_id >= 0 || passenger_info[it->second.second].car_id >= 0)
+	      continue;
+        passenger_info[it->second.second].car_id = it->second.first;
+	    car_info[it->second.first].passenger_id = it->second.second;
+	  }
+	}
+	
+	for (unsigned i = 0; i < cars_at_intersections.size(); i++) {
+  	  if (cars_at_intersections[i].passenger_id >= 0) { // with passenger; just find a nearest route to dst
+	    cars_at_intersections[i].intersection_id = findNextNode(
+		  cars_at_intersections[i].intersection_id, 
+		  passenger_info[cars_at_intersections[i].passenger_id].request.dst_intersection_id);
+	  } else if (car_info[cars_at_intersections[i].car_id].passenger_id >= 0) { // no passenger; try find the best passenger 
+	    int bestPassenger = car_info[cars_at_intersections[i].car_id].passenger_id;
+#ifdef _DEBUG
+        printf("best passenger %d\n", bestPassenger);
+#endif
+        if (passenger_info[bestPassenger].request.src_intersection_id == cars_at_intersections[i].intersection_id) { 
+		  // just pickup the passenger, and toward to dst
+	      cars_at_intersections[i].passenger_id = passenger_info[bestPassenger].request.passenger_id;
+	      passenger_info[bestPassenger].status = 1;
+		  int prev_intersection_id = cars_at_intersections[i].intersection_id;
+		  cars_at_intersections[i].intersection_id = findNextNode(cars_at_intersections[i].intersection_id, 
+		  passenger_info[bestPassenger].request.dst_intersection_id);
+		  car_info[cars_at_intersections[i].car_id].carctl = cars_at_intersections[i];
+		  car_info[cars_at_intersections[i].car_id].arrival_time = turn + 
+		    findDistance(prev_intersection_id, cars_at_intersections[i].intersection_id);
+	    } else {  // toward to the passenger
+		  cars_at_intersections[i].intersection_id = findNextNode(cars_at_intersections[i].intersection_id, 
+		  passenger_info[bestPassenger].request.src_intersection_id);
+		  car_info[cars_at_intersections[i].car_id].carctl = cars_at_intersections[i];
+#ifdef _DEBUG
+          printf("%d\n", cars_at_intersections[i].intersection_id);
+#endif
+	    }
+      } else { // no passenger at all, do nothing
+		// might be optimized by checking the distribution of cars
+		continue;
+	  }
+	}
+  }
 private:
   vector<IntersectionInfo> intersections;
   vector<RoadInfo> roads;
