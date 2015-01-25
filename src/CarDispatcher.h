@@ -17,16 +17,21 @@
 using namespace std;
 
 //#define _DEBUG
+#define FIND_NEAREST
 
 struct PassengerInfo {
   PassengerRequest request;
-  int status; // 0: wait; 1: moving & fulfill
+  int status; // 0: wait; 1: moving or fulfill
+};
+
+struct CarInfo {
+  CarCtl carctl;
+  int arrival_time;
 };
 
 class CarDispatcher { 
 
 public:
-
   CarDispatcher(std::vector<IntersectionInfo> _intersections, std::vector<RoadInfo> _roads)
   : intersections(_intersections)
   , roads(_roads)
@@ -106,11 +111,12 @@ public:
 	return distance[src][dst];
   }
 
+  static int turn;
   void onTurn(std::vector<CarCtl> & cars_at_intersections, 
               const std::vector<PassengerRequest> & passenger_requests) {
-#ifdef _DEBUG
-	static int turn = 0;
-	printf("turn %d:\n", turn++);
+	turn++;
+#ifdef _DEBUG	
+	printf("turn %d:\n", turn);
 #endif
 	
 	for (unsigned i = 0; i < passenger_requests.size(); i++) {
@@ -118,23 +124,40 @@ public:
 	  passenger_info[passenger_requests[i].passenger_id] = info;
 	}
 #ifdef _DEBUG
+	// print all passenger info
     printf("passenger info:\n");
 	for (map<int, PassengerInfo>::iterator it = passenger_info.begin(); it != passenger_info.end(); it++) {
 	  printf("%d: (%d => %d) %d\n", it->second.request.passenger_id, 
 	    it->second.request.src_intersection_id, it->second.request.dst_intersection_id, it->second.status);
 	}
-	// print all passenger info
 #endif
 
     // might be optimized by checking passenger and decide which car would serve
+	for (map<int, PassengerInfo>::iterator it = passenger_info.begin(); it != passenger_info.end(); it++) {
+	  if (it->second.status)
+	    continue;
+	}
 	
 #ifdef _DEBUG
+	// print all car info
     printf("car info:\n");
-    for (unsigned i = 0; i < cars_at_intersections.size(); i++) {
-	  printf("%d %d %d\n", cars_at_intersections[i].car_id, cars_at_intersections[i].intersection_id, 
-	    cars_at_intersections[i].passenger_id);
+	for (map<int, CarInfo>::iterator it = car_info.begin(); it != car_info.end(); it++) {
+	  printf("%d %d %d %d\n", it->second.carctl.car_id, it->second.carctl.intersection_id, 
+	    it->second.carctl.passenger_id, it->second.arrival_time);
 	}
-#endif	
+#endif
+	for (unsigned i = 0; i < cars_at_intersections.size(); i++) {
+	  CarInfo info = {cars_at_intersections[i], turn};
+	  car_info[cars_at_intersections[i].car_id] = info;
+	}
+	
+#ifdef FIND_NEAREST
+    findNearest(cars_at_intersections);
+	return;
+#endif
+  }
+  
+  void findNearest(std::vector<CarCtl> & cars_at_intersections) {
 	// for each idle car, decide if need to find nearest passenger or move to place without cars
 	for (unsigned i = 0; i < cars_at_intersections.size(); i++) {
 	  if (cars_at_intersections[i].passenger_id >= 0) { // with passenger; just find a nearest route to dst
@@ -142,35 +165,26 @@ public:
 		  cars_at_intersections[i].intersection_id, 
 		  passenger_info[cars_at_intersections[i].passenger_id].request.dst_intersection_id);
 	  } else { // no passenger; try find a nearest passenger 
-	    int nearestDistance = INT_MAX;
-	    int nearestPassenger = -1;
+	    int bestScore = INT_MAX;
+	    int bestPassenger = -1;
 	    for (map<int, PassengerInfo>::iterator it = passenger_info.begin(); it != passenger_info.end(); it++) {
 		  if (it->second.status)
 		    continue;
-	      int dist = findDistance(cars_at_intersections[i].intersection_id, it->second.request.src_intersection_id);
-#ifdef _DEBUG
-          printf("distance from passenger %d is %d\n", it->first, dist);
-#endif		
-		  if (dist < nearestDistance) { // might be optimized by checking if passenger's dst has another passenger 
-		    nearestDistance = dist;
-		    nearestPassenger = it->first;
+	      int dist = findDistance(cars_at_intersections[i].intersection_id, it->second.request.src_intersection_id);	
+		  if (dist < bestScore) { // might be optimized by checking if passenger's dst has another passenger 
+		    bestScore = dist;
+		    bestPassenger = it->first;
 		  }
 	    }
-#ifdef _DEBUG
-        printf("nearest passenger %d at distance %d\n", nearestPassenger, nearestDistance);
-#endif		
-	    if (nearestPassenger >= 0) {
-	      if (nearestDistance == 0) { // just pickup the passenger, and toward to dst
-		    cars_at_intersections[i].passenger_id = passenger_info[nearestPassenger].request.passenger_id;
-		    passenger_info[nearestPassenger].status = 1;
+	    if (bestPassenger >= 0) {
+	      if (bestScore == 0) { // just pickup the passenger, and toward to dst
+		    cars_at_intersections[i].passenger_id = passenger_info[bestPassenger].request.passenger_id;
+		    passenger_info[bestPassenger].status = 1;
 			cars_at_intersections[i].intersection_id = findNextNode(cars_at_intersections[i].intersection_id, 
-			  passenger_info[nearestPassenger].request.dst_intersection_id);
+			  passenger_info[bestPassenger].request.dst_intersection_id);
 		  } else {  // toward to the passenger
 			cars_at_intersections[i].intersection_id = findNextNode(cars_at_intersections[i].intersection_id, 
-			  passenger_info[nearestPassenger].request.src_intersection_id);
-#ifdef _DEBUG
-            printf("findNextNode(%d,%d)=%d\n", cars_at_intersections[i].intersection_id, passenger_info[nearestPassenger].request.src_intersection_id, cars_at_intersections[i].intersection_id);
-#endif		
+			  passenger_info[bestPassenger].request.src_intersection_id);
 		  }
 		} else { // no passenger at all, do nothing
 		  // might be optimized by checking the distribution of cars
@@ -183,13 +197,13 @@ public:
 private:
   vector<IntersectionInfo> intersections;
   vector<RoadInfo> roads;
-  map<int, pair<CarCtl, int> > cars;	// time remain to get destination
   map<int, PassengerInfo> passenger_info;
   vector<vector<int> > shortest_node;
   vector<vector<int> > distance;
   vector<vector<RoadInfo> > roads_in_intersection;
+  map<int, CarInfo> car_info;
 };
 
-
+int CarDispatcher::turn = 0;
 
 #endif
