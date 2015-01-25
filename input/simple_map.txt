@@ -1,0 +1,18 @@
+nodes
+20 20
+500 500
+700 20
+600 700
+undirected_edges
+0 1
+1 2
+2 0
+1 3
+directed_edges
+init_car_locs
+0
+add_passenger_events
+0 0 2
+10 2 3
+11 2 1
+15 3 0
